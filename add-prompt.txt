@@ -1,0 +1,185 @@
+AI-powered SQL generation
+
+ClickHouse Client includes built-in AI assistance for generating SQL queries from natural language descriptions. This feature helps users write complex queries without deep SQL knowledge.
+
+The AI assistance works out of the box if you have either OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable set. For more advanced configuration, see the Configuration section.
+
+Usage
+
+To use AI SQL generation, prefix your natural language query with ??:
+
+:) ?? show all users who made purchases in the last 30 days
+
+The AI will:
+
+Explore your database schema automatically
+Generate appropriate SQL based on the discovered tables and columns
+Execute the generated query immediately
+Example
+
+:) ?? count orders by product category
+
+Starting AI SQL generation with schema discovery...
+──────────────────────────────────────────────────
+
+🔍 list_databases
+   ➜ system, default, sales_db
+
+🔍 list_tables_in_database
+   database: sales_db
+   ➜ orders, products, categories
+
+🔍 get_schema_for_table
+   database: sales_db
+   table: orders
+   ➜ CREATE TABLE orders (order_id UInt64, product_id UInt64, quantity UInt32, ...)
+
+✨ SQL query generated successfully!
+──────────────────────────────────────────────────
+
+SELECT
+    c.name AS category,
+    COUNT(DISTINCT o.order_id) AS order_count
+FROM sales_db.orders o
+JOIN sales_db.products p ON o.product_id = p.product_id
+JOIN sales_db.categories c ON p.category_id = c.category_id
+GROUP BY c.name
+ORDER BY order_count DESC
+
+Configuration
+
+AI SQL generation requires configuring an AI provider in your ClickHouse Client configuration file. You can use either OpenAI, Anthropic, or any OpenAI-compatible API service.
+
+Environment-based fallback
+
+If no AI configuration is specified in the config file, ClickHouse Client will automatically try to use environment variables:
+
+First checks for OPENAI_API_KEY environment variable
+If not found, checks for ANTHROPIC_API_KEY environment variable
+If neither is found, AI features will be disabled
+This allows quick setup without configuration files:
+
+# Using OpenAI
+export OPENAI_API_KEY=your-openai-key
+clickhouse-client
+
+# Using Anthropic
+export ANTHROPIC_API_KEY=your-anthropic-key
+clickhouse-client
+
+Configuration file
+
+For more control over AI settings, configure them in your ClickHouse Client configuration file located at:
+
+$XDG_CONFIG_HOME/clickhouse/config.xml (or ~/.config/clickhouse/config.xml if XDG_CONFIG_HOME is not set) (XML format)
+$XDG_CONFIG_HOME/clickhouse/config.yaml (or ~/.config/clickhouse/config.yaml if XDG_CONFIG_HOME is not set) (YAML format)
+~/.clickhouse-client/config.xml (XML format, legacy location)
+~/.clickhouse-client/config.yaml (YAML format, legacy location)
+Or specify a custom location with --config-file
+XML
+YAML
+<config>
+    <ai>
+        <!-- Required: Your API key (or set via environment variable) -->
+        <api_key>your-api-key-here</api_key>
+
+        <!-- Required: Provider type (openai, anthropic) -->
+        <provider>openai</provider>
+
+        <!-- Model to use (defaults vary by provider) -->
+        <model>gpt-4o</model>
+
+        <!-- Optional: Custom API endpoint for OpenAI-compatible services -->
+        <!-- <base_url>https://openrouter.ai/api</base_url> -->
+
+        <!-- Schema exploration settings -->
+        <enable_schema_access>true</enable_schema_access>
+
+        <!-- Generation parameters -->
+        <temperature>0.0</temperature>
+        <max_tokens>1000</max_tokens>
+        <timeout_seconds>30</timeout_seconds>
+        <max_steps>10</max_steps>
+
+        <!-- Optional: Custom system prompt -->
+        <!-- <system_prompt>You are an expert ClickHouse SQL assistant...</system_prompt> -->
+    </ai>
+</config>
+
+
+Using OpenAI-compatible APIs (e.g., OpenRouter):
+
+ai:
+  provider: openai  # Use 'openai' for compatibility
+  api_key: your-openrouter-api-key
+  base_url: https://openrouter.ai/api/v1
+  model: anthropic/claude-3.5-sonnet  # Use OpenRouter model naming
+
+Minimal configuration examples:
+
+# Minimal config - uses environment variable for API key
+ai:
+  provider: openai  # Will use OPENAI_API_KEY env var
+
+# No config at all - automatic fallback
+# (Empty or no ai section - will try OPENAI_API_KEY then ANTHROPIC_API_KEY)
+
+# Only override model - uses env var for API key
+ai:
+  provider: openai
+  model: gpt-3.5-turbo
+
+Parameters
+
+Required parameters
+api_key - Your API key for the AI service. Can be omitted if set via environment variable:
+OpenAI: OPENAI_API_KEY
+Anthropic: ANTHROPIC_API_KEY
+Note: API key in config file takes precedence over environment variable
+provider - The AI provider: openai or anthropic
+If omitted, uses automatic fallback based on available environment variables
+Model configuration
+model - The model to use (default: provider-specific)
+OpenAI: gpt-4o, gpt-4, gpt-3.5-turbo, etc.
+Anthropic: claude-3-5-sonnet-20241022, claude-3-opus-20240229, etc.
+OpenRouter: Use their model naming like anthropic/claude-3.5-sonnet
+Connection settings
+base_url - Custom API endpoint for OpenAI-compatible services (optional)
+timeout_seconds - Request timeout in seconds (default: 30)
+Schema exploration
+enable_schema_access - Allow AI to explore database schemas (default: true)
+max_steps - Maximum tool-calling steps for schema exploration (default: 10)
+Generation parameters
+temperature - Controls randomness, 0.0 = deterministic, 1.0 = creative (default: 0.0)
+max_tokens - Maximum response length in tokens (default: 1000)
+system_prompt - Custom instructions for the AI (optional)
+How it works
+
+The AI SQL generator uses a multi-step process:
+
+
+Schema Discovery
+The AI uses built-in tools to explore your database
+Lists available databases
+Discovers tables within relevant databases
+Examines table structures via CREATE TABLE statements
+
+Query Generation
+Based on the discovered schema, the AI generates SQL that:
+Matches your natural language intent
+Uses correct table and column names
+Applies appropriate joins and aggregations
+
+Execution
+The generated SQL is automatically executed and results are displayed
+Limitations
+
+Requires an active internet connection
+API usage is subject to rate limits and costs from the AI provider
+Complex queries may require multiple refinements
+The AI has read-only access to schema information, not actual data
+Security
+
+API keys are never sent to ClickHouse servers
+The AI only sees schema information (table/column names and types), not actual data
+All generated queries respect your existing database permissions
