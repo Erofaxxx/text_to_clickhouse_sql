@@ -103,7 +103,7 @@ class ClickHouseSQLGenerator:
         if self.config_file and os.path.exists(self.config_file):
             try:
                 os.unlink(self.config_file)
-            except:
+            except OSError:
                 pass
     
     def connect_to_clickhouse(self):
@@ -137,8 +137,16 @@ class ClickHouseSQLGenerator:
             print(f"  Проверьте настройки подключения в файле .env")
             return False
     
-    def _build_clickhouse_command(self, query):
-        """Build clickhouse-client command with all necessary parameters"""
+    def _build_clickhouse_command(self, query, extra_args=None):
+        """Build clickhouse-client command with all necessary parameters
+        
+        Args:
+            query (str): SQL query to execute
+            extra_args (list): Additional command line arguments
+            
+        Returns:
+            list: Command and arguments for subprocess
+        """
         cmd = ['clickhouse-client']
         
         # Connection parameters
@@ -162,11 +170,16 @@ class ClickHouseSQLGenerator:
         if self.config_file:
             cmd.extend(['--config-file', self.config_file])
         
+        # Add extra arguments if provided
+        if extra_args:
+            cmd.extend(extra_args)
+        
         # Query
         cmd.extend(['--query', query])
         
-        # Output format
-        cmd.extend(['--format', 'TabSeparated'])
+        # Output format (default)
+        if not extra_args or '--format' not in extra_args:
+            cmd.extend(['--format', 'TabSeparated'])
         
         return cmd
     
@@ -223,36 +236,10 @@ class ClickHouseSQLGenerator:
             print("\n⏳ Генерация SQL запроса с использованием ClickHouse AI...")
             
             # Use ClickHouse's built-in AI SQL generation with ?? prefix
-            # We'll capture the generated SQL by using a special format
             ai_query = f"?? {natural_query}"
             
-            # Build command to use AI generation
-            cmd = ['clickhouse-client']
-            
-            # Connection parameters
-            if self.ch_host:
-                cmd.extend(['--host', self.ch_host])
-            if self.ch_port:
-                cmd.extend(['--port', str(self.ch_port)])
-            if self.ch_user:
-                cmd.extend(['--user', self.ch_user])
-            if self.ch_password:
-                cmd.extend(['--password', self.ch_password])
-            if self.ch_database:
-                cmd.extend(['--database', self.ch_database])
-            
-            # SSL settings
-            cmd.append('--secure')
-            if self.ch_ssl_cert and os.path.exists(self.ch_ssl_cert):
-                cmd.extend(['--cafile', self.ch_ssl_cert])
-            
-            # AI configuration file
-            if self.config_file:
-                cmd.extend(['--config-file', self.config_file])
-            
-            # Enable multiline mode and add query
-            cmd.extend(['--multiline'])
-            cmd.extend(['--query', ai_query])
+            # Build command using helper method with multiline mode
+            cmd = self._build_clickhouse_command(ai_query, extra_args=['--multiline'])
             
             # Run the command
             result = subprocess.run(
@@ -283,7 +270,7 @@ class ClickHouseSQLGenerator:
                     if 'AI features' in result.stderr or 'API key' in result.stderr:
                         print("  Проверьте настройки AI API ключа")
                     else:
-                        print(f"  {result.stderr.split(chr(10))[0]}")  # First line only
+                        print(f"  {result.stderr.split('\n')[0]}")  # First line only
                 return None
                 
         except subprocess.TimeoutExpired:
