@@ -93,6 +93,14 @@ class ClickHouseSQLGenerator:
   enable_schema_access: true
 """
         
+        # Add SSL CA certificate configuration if specified
+        if self.ch_ssl_cert and os.path.exists(self.ch_ssl_cert):
+            ca_path = os.path.abspath(self.ch_ssl_cert)
+            config_content += f"""openSSL:
+  client:
+    caConfig: {ca_path}
+"""
+
         # Create temporary config file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
             f.write(config_content)
@@ -163,8 +171,6 @@ class ClickHouseSQLGenerator:
         
         # SSL settings
         cmd.append('--secure')
-        if self.ch_ssl_cert and os.path.exists(self.ch_ssl_cert):
-            cmd.extend(['--cafile', self.ch_ssl_cert])
         
         # AI configuration file
         if self.config_file:
