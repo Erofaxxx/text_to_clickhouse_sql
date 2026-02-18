@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import re
 import ssl
+import base64
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -80,12 +81,8 @@ class ClickHouseSQLGenerator:
         """
         url = self._build_http_url()
         
-        # Build query parameters
+        # Build query parameters (database only, credentials via Basic Auth)
         params = {}
-        if self.ch_user:
-            params['user'] = self.ch_user
-        if self.ch_password:
-            params['password'] = self.ch_password
         if self.ch_database:
             params['database'] = self.ch_database
         
@@ -105,6 +102,13 @@ class ClickHouseSQLGenerator:
                 data=query.encode('utf-8'),
                 method='POST'
             )
+            
+            # Use HTTP Basic Auth for credentials
+            if self.ch_user and self.ch_password:
+                credentials = base64.b64encode(
+                    f"{self.ch_user}:{self.ch_password}".encode('utf-8')
+                ).decode('ascii')
+                req.add_header('Authorization', f'Basic {credentials}')
             
             response = urllib.request.urlopen(req, timeout=timeout, context=ssl_context)
             output = response.read().decode('utf-8')
