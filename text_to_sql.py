@@ -2,32 +2,25 @@
 """
 Text to ClickHouse SQL Converter
 Конвертер текстовых запросов на русском языке в SQL запросы для ClickHouse
+Использует встроенную функцию AI SQL generation в ClickHouse
 """
 
 import os
 import sys
-import json
-import requests
+import subprocess
+import tempfile
+import re
 from dotenv import load_dotenv
-import clickhouse_connect
 
 # Load environment variables from .env file
 load_dotenv()
 
 
 class ClickHouseSQLGenerator:
-    """Main class for converting natural language to ClickHouse SQL"""
+    """Main class for converting natural language to ClickHouse SQL using ClickHouse built-in AI"""
     
     def __init__(self):
-        """Initialize the SQL generator with API credentials and database connection"""
-        # OpenRouter API configuration
-        self.api_key = os.getenv('OPENROUTER_API_KEY')
-        if not self.api_key:
-            raise ValueError("OPENROUTER_API_KEY not found in environment variables")
-        
-        self.api_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.model = "anthropic/claude-3.5-sonnet"
-        
+        """Initialize the SQL generator with ClickHouse connection and AI configuration"""
         # ClickHouse configuration
         self.ch_host = os.getenv('CLICKHOUSE_HOST', '').replace('https://', '').replace('http://', '')
         self.ch_port = int(os.getenv('CLICKHOUSE_PORT', '8443'))
@@ -37,64 +30,184 @@ class ClickHouseSQLGenerator:
         self.ch_table = os.getenv('CLICKHOUSE_TABLE', 'visits_complete')
         self.ch_ssl_cert = os.getenv('CLICKHOUSE_SSL_CERT_PATH')
         
-        # Initialize ClickHouse client
-        self.client = None
-        self.schema_info = None
+        # AI configuration - supports multiple API keys
+        # Priority: OPENROUTER_API_KEY > ANTHROPIC_API_KEY > OPENAI_API_KEY
+        self.openrouter_key = os.getenv('OPENROUTER_API_KEY')
+        self.anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+        self.openai_key = os.getenv('OPENAI_API_KEY')
         
+        # Determine which AI service to use
+        if self.openrouter_key:
+            self.ai_provider = 'openrouter'
+            self.ai_api_key = self.openrouter_key
+        elif self.anthropic_key:
+            self.ai_provider = 'anthropic'
+            self.ai_api_key = self.anthropic_key
+        elif self.openai_key:
+            self.ai_provider = 'openai'
+            self.ai_api_key = self.openai_key
+        else:
+            raise ValueError("No AI API key found. Set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY")
+        
+        # Create config file for ClickHouse AI settings
+        self.config_file = None
+        self.create_clickhouse_config()
+        
+        # Connection test status
+        self.connection_ok = False
+    
+    def create_clickhouse_config(self):
+        """Create ClickHouse client configuration file with AI settings"""
+        config_content = ""
+        
+        if self.ai_provider == 'openrouter':
+            # OpenRouter configuration (uses OpenAI-compatible API)
+            config_content = f"""ai:
+  provider: openai
+  api_key: {self.ai_api_key}
+  base_url: https://openrouter.ai/api/v1
+  model: anthropic/claude-3.5-sonnet
+  temperature: 0.0
+  max_tokens: 1000
+  timeout_seconds: 30
+  enable_schema_access: true
+"""
+        elif self.ai_provider == 'anthropic':
+            config_content = f"""ai:
+  provider: anthropic
+  api_key: {self.ai_api_key}
+  model: claude-3-5-sonnet-20241022
+  temperature: 0.0
+  max_tokens: 1000
+  timeout_seconds: 30
+  enable_schema_access: true
+"""
+        elif self.ai_provider == 'openai':
+            config_content = f"""ai:
+  provider: openai
+  api_key: {self.ai_api_key}
+  model: gpt-4o
+  temperature: 0.0
+  max_tokens: 1000
+  timeout_seconds: 30
+  enable_schema_access: true
+"""
+        
+        # Create temporary config file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(config_content)
+            self.config_file = f.name
+    
+    def __del__(self):
+        """Cleanup temporary config file"""
+        if self.config_file and os.path.exists(self.config_file):
+            try:
+                os.unlink(self.config_file)
+            except:
+                pass
+    
     def connect_to_clickhouse(self):
-        """Establish connection to ClickHouse database"""
+        """Test connection to ClickHouse database"""
         try:
-            # Configure SSL settings
-            settings = {
-                'verify': True
-            }
-            
-            if self.ch_ssl_cert and os.path.exists(self.ch_ssl_cert):
-                settings['verify'] = self.ch_ssl_cert
-            
-            self.client = clickhouse_connect.get_client(
-                host=self.ch_host,
-                port=self.ch_port,
-                username=self.ch_user,
-                password=self.ch_password,
-                database=self.ch_database,
-                secure=True,
-                **settings
+            cmd = self._build_clickhouse_command("SELECT 1")
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
             )
             
-            print("✓ Успешно подключено к ClickHouse базе данных")
-            return True
+            if result.returncode == 0:
+                print("✓ Успешно подключено к ClickHouse базе данных")
+                self.connection_ok = True
+                return True
+            else:
+                print(f"✗ Ошибка подключения к ClickHouse")
+                print(f"  Проверьте настройки подключения в файле .env")
+                if result.stderr:
+                    # Only show first line of error to avoid exposing sensitive info
+                    error_line = result.stderr.split('\n')[0]
+                    print(f"  {error_line}")
+                return False
+        except subprocess.TimeoutExpired:
+            print("✗ Превышено время ожидания подключения к ClickHouse")
+            return False
         except Exception as e:
             print(f"✗ Ошибка подключения к ClickHouse")
             print(f"  Проверьте настройки подключения в файле .env")
             return False
     
+    def _build_clickhouse_command(self, query):
+        """Build clickhouse-client command with all necessary parameters"""
+        cmd = ['clickhouse-client']
+        
+        # Connection parameters
+        if self.ch_host:
+            cmd.extend(['--host', self.ch_host])
+        if self.ch_port:
+            cmd.extend(['--port', str(self.ch_port)])
+        if self.ch_user:
+            cmd.extend(['--user', self.ch_user])
+        if self.ch_password:
+            cmd.extend(['--password', self.ch_password])
+        if self.ch_database:
+            cmd.extend(['--database', self.ch_database])
+        
+        # SSL settings
+        cmd.append('--secure')
+        if self.ch_ssl_cert and os.path.exists(self.ch_ssl_cert):
+            cmd.extend(['--cafile', self.ch_ssl_cert])
+        
+        # AI configuration file
+        if self.config_file:
+            cmd.extend(['--config-file', self.config_file])
+        
+        # Query
+        cmd.extend(['--query', query])
+        
+        # Output format
+        cmd.extend(['--format', 'TabSeparated'])
+        
+        return cmd
+    
     def get_table_schema(self):
         """Get table schema information from ClickHouse"""
-        if not self.client:
+        if not self.connection_ok:
             if not self.connect_to_clickhouse():
                 return None
         
         try:
             query = f"DESCRIBE TABLE {self.ch_database}.{self.ch_table}"
-            result = self.client.query(query)
+            cmd = self._build_clickhouse_command(query)
             
-            schema = []
-            for row in result.result_rows:
-                schema.append({
-                    'name': row[0],
-                    'type': row[1],
-                })
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
             
-            self.schema_info = schema
-            return schema
+            if result.returncode == 0 and result.stdout:
+                schema = []
+                for line in result.stdout.strip().split('\n'):
+                    if line:
+                        parts = line.split('\t')
+                        if len(parts) >= 2:
+                            schema.append({
+                                'name': parts[0],
+                                'type': parts[1],
+                            })
+                return schema
+            else:
+                print(f"✗ Ошибка при получении схемы таблицы")
+                return None
         except Exception as e:
-            print(f"✗ Ошибка при получении схемы таблицы: {e}")
+            print(f"✗ Ошибка при получении схемы таблицы")
             return None
     
     def generate_sql(self, natural_query):
         """
-        Generate SQL query from natural language using OpenRouter API
+        Generate SQL query from natural language using ClickHouse built-in AI
         
         Args:
             natural_query (str): Natural language query in Russian
@@ -102,75 +215,119 @@ class ClickHouseSQLGenerator:
         Returns:
             str: Generated SQL query or None if failed
         """
-        # Get schema if not already loaded
-        if not self.schema_info:
-            self.get_table_schema()
-        
-        # Prepare schema information for the prompt
-        schema_text = ""
-        if self.schema_info:
-            schema_text = "\n".join([f"- {col['name']} ({col['type']})" for col in self.schema_info])
-        
-        # Create prompt for the AI model
-        system_prompt = f"""Ты эксперт по SQL и ClickHouse. Твоя задача - преобразовать запросы на русском языке в правильные SQL запросы для ClickHouse.
-
-База данных: {self.ch_database}
-Таблица: {self.ch_table}
-
-Схема таблицы:
-{schema_text if schema_text else "Схема не доступна"}
-
-ВАЖНО:
-1. Возвращай ТОЛЬКО SQL запрос, без объяснений и комментариев
-2. Используй правильный синтаксис ClickHouse
-3. Не добавляй markdown форматирование (без ```sql или ```)
-4. Запрос должен быть готов к выполнению
-"""
-
-        user_prompt = f"Создай SQL запрос для следующего запроса на русском языке: {natural_query}"
-        
-        # Prepare API request
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/Erofaxxx/text_to_clickhouse_sql",
-            "X-Title": "Text to ClickHouse SQL",
-        }
-        
-        data = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": 0.1,
-            "max_tokens": 1000
-        }
+        if not self.connection_ok:
+            if not self.connect_to_clickhouse():
+                return None
         
         try:
-            print("\n⏳ Генерация SQL запроса...")
-            response = requests.post(self.api_url, headers=headers, json=data, timeout=30)
-            response.raise_for_status()
+            print("\n⏳ Генерация SQL запроса с использованием ClickHouse AI...")
             
-            result = response.json()
-            sql_query = result['choices'][0]['message']['content'].strip()
+            # Use ClickHouse's built-in AI SQL generation with ?? prefix
+            # We'll capture the generated SQL by using a special format
+            ai_query = f"?? {natural_query}"
             
-            # Clean up the SQL query (remove markdown formatting if present)
-            sql_query = sql_query.replace('```sql', '').replace('```', '').strip()
+            # Build command to use AI generation
+            cmd = ['clickhouse-client']
             
-            return sql_query
-        except requests.exceptions.Timeout:
-            print("✗ Превышено время ожидания ответа от API")
-            print("  Проверьте подключение к интернету или попробуйте позже")
+            # Connection parameters
+            if self.ch_host:
+                cmd.extend(['--host', self.ch_host])
+            if self.ch_port:
+                cmd.extend(['--port', str(self.ch_port)])
+            if self.ch_user:
+                cmd.extend(['--user', self.ch_user])
+            if self.ch_password:
+                cmd.extend(['--password', self.ch_password])
+            if self.ch_database:
+                cmd.extend(['--database', self.ch_database])
+            
+            # SSL settings
+            cmd.append('--secure')
+            if self.ch_ssl_cert and os.path.exists(self.ch_ssl_cert):
+                cmd.extend(['--cafile', self.ch_ssl_cert])
+            
+            # AI configuration file
+            if self.config_file:
+                cmd.extend(['--config-file', self.config_file])
+            
+            # Enable multiline mode and add query
+            cmd.extend(['--multiline'])
+            cmd.extend(['--query', ai_query])
+            
+            # Run the command
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60  # AI generation may take longer
+            )
+            
+            if result.returncode == 0:
+                # Extract SQL from output
+                output = result.stdout.strip()
+                
+                # The output should contain the generated SQL
+                # Parse it to extract just the SQL query
+                sql_query = self._extract_sql_from_output(output)
+                
+                if sql_query:
+                    return sql_query
+                else:
+                    # If we can't parse, return the full output
+                    print("⚠ Не удалось извлечь SQL из ответа, показываем полный вывод")
+                    return output
+            else:
+                print("✗ Ошибка при генерации SQL запроса")
+                if result.stderr:
+                    # Check for specific error messages
+                    if 'AI features' in result.stderr or 'API key' in result.stderr:
+                        print("  Проверьте настройки AI API ключа")
+                    else:
+                        print(f"  {result.stderr.split(chr(10))[0]}")  # First line only
+                return None
+                
+        except subprocess.TimeoutExpired:
+            print("✗ Превышено время ожидания ответа от AI")
+            print("  Попробуйте упростить запрос или повторите позже")
             return None
-        except requests.exceptions.RequestException as e:
-            print(f"✗ Ошибка при обращении к API")
-            print(f"  Проверьте API ключ и подключение к интернету")
+        except Exception as e:
+            print(f"✗ Ошибка при генерации SQL запроса")
             return None
-        except (KeyError, IndexError) as e:
-            print(f"✗ Ошибка при парсинге ответа API")
-            print(f"  Получен неожиданный формат ответа")
-            return None
+    
+    def _extract_sql_from_output(self, output):
+        """Extract SQL query from ClickHouse AI output"""
+        # The AI output typically contains the SQL query
+        # We need to extract it, removing any explanatory text
+        
+        lines = output.split('\n')
+        sql_lines = []
+        in_sql = False
+        
+        for line in lines:
+            # Skip empty lines and metadata
+            if not line.strip():
+                continue
+            
+            # Skip lines that look like AI commentary
+            if line.startswith('Starting AI') or line.startswith('──') or \
+               line.startswith('🔍') or line.startswith('✨') or \
+               'generated successfully' in line.lower():
+                continue
+            
+            # Look for SQL keywords to identify SQL content
+            if re.match(r'^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|SHOW|DESCRIBE)', 
+                       line, re.IGNORECASE):
+                in_sql = True
+            
+            if in_sql:
+                sql_lines.append(line)
+        
+        if sql_lines:
+            return '\n'.join(sql_lines).strip()
+        
+        # If we couldn't find SQL keywords, return the full output
+        # (it might be a simple query without SELECT)
+        return output.strip()
     
     def execute_query(self, sql_query, limit=10):
         """
@@ -181,71 +338,112 @@ class ClickHouseSQLGenerator:
             limit (int): Maximum number of rows to return
             
         Returns:
-            list: Query results or None if failed
+            tuple: (success, output) where success is bool and output is string
         """
-        if not self.client:
+        if not self.connection_ok:
             if not self.connect_to_clickhouse():
-                return None
+                return False, None
         
         try:
             # Add LIMIT if not present and it's a SELECT query
             if 'LIMIT' not in sql_query.upper() and sql_query.strip().upper().startswith('SELECT'):
                 sql_query = f"{sql_query} LIMIT {limit}"
             
-            result = self.client.query(sql_query)
-            return result
+            # Execute query using clickhouse-client
+            cmd = self._build_clickhouse_command(sql_query)
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                return True, result.stdout.strip()
+            else:
+                print(f"✗ Ошибка при выполнении запроса")
+                if result.stderr:
+                    # Show sanitized error
+                    error = result.stderr.split('\n')[0]
+                    print(f"  {error}")
+                return False, None
+        except subprocess.TimeoutExpired:
+            print(f"✗ Превышено время ожидания выполнения запроса")
+            return False, None
         except Exception as e:
-            print(f"✗ Ошибка при выполнении запроса: {e}")
-            return None
+            print(f"✗ Ошибка при выполнении запроса")
+            return False, None
     
-    def format_results(self, result):
+    def format_results(self, output):
         """
         Format query results for display
         
         Args:
-            result: ClickHouse query result
+            output (str): Raw output from clickhouse-client
             
         Returns:
             str: Formatted results
         """
-        if not result:
+        if not output:
             return "Нет результатов"
         
         try:
-            rows = result.result_rows
-            columns = result.column_names
+            lines = output.strip().split('\n')
             
-            if not rows:
+            if not lines:
                 return "Запрос выполнен успешно. Результатов: 0"
             
+            # For TabSeparated format, we need to format it as a table
+            # Split each line by tabs
+            rows = [line.split('\t') for line in lines]
+            
+            if not rows:
+                return "Нет результатов"
+            
             # Calculate column widths
-            col_widths = [len(str(col)) for col in columns]
+            num_cols = len(rows[0])
+            col_widths = [0] * num_cols
+            
             for row in rows:
                 for i, val in enumerate(row):
-                    col_widths[i] = max(col_widths[i], len(str(val)))
-            
-            # Format header
-            header = " | ".join([str(col).ljust(col_widths[i]) for i, col in enumerate(columns)])
-            separator = "-+-".join(["-" * w for w in col_widths])
+                    if i < num_cols:
+                        col_widths[i] = max(col_widths[i], len(str(val)))
             
             # Format rows
             formatted_rows = []
             for row in rows:
-                formatted_row = " | ".join([str(val).ljust(col_widths[i]) for i, val in enumerate(row)])
+                formatted_row = " | ".join([
+                    str(val).ljust(col_widths[i]) 
+                    for i, val in enumerate(row) if i < num_cols
+                ])
                 formatted_rows.append(formatted_row)
             
-            output = [
-                "",
-                header,
-                separator,
-                *formatted_rows,
-                "",
-                f"Всего строк: {len(rows)}"
-            ]
+            # Create separator
+            separator = "-+-".join(["-" * w for w in col_widths])
             
-            return "\n".join(output)
+            # For first row as header
+            if len(formatted_rows) > 1:
+                result = [
+                    "",
+                    formatted_rows[0],
+                    separator,
+                    *formatted_rows[1:],
+                    "",
+                    f"Всего строк: {len(rows) - 1}"
+                ]
+            else:
+                result = [
+                    "",
+                    *formatted_rows,
+                    "",
+                    f"Всего строк: {len(rows)}"
+                ]
+            
+            return "\n".join(result)
         except Exception as e:
-            return f"Ошибка форматирования результатов: {e}"
+            # If formatting fails, return raw output
+            return f"\n{output}\n"
 
 
 def print_banner():
@@ -254,6 +452,7 @@ def print_banner():
 ╔══════════════════════════════════════════════════════════════╗
 ║   Text to ClickHouse SQL - AI-Powered Query Generator       ║
 ║   Конвертер текстовых запросов в SQL для ClickHouse         ║
+║   Использует встроенную функцию ClickHouse AI generation    ║
 ╚══════════════════════════════════════════════════════════════╝
 """
     print(banner)
@@ -283,10 +482,12 @@ def main():
     # Initialize SQL generator
     try:
         generator = ClickHouseSQLGenerator()
+        print(f"✓ AI Provider: {generator.ai_provider}")
     except ValueError as e:
         print(f"✗ Ошибка инициализации: {e}")
         print("\nПроверьте, что файл .env настроен правильно.")
         print("Скопируйте .env.example в .env и заполните все необходимые значения.")
+        print("Требуется один из ключей: OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY")
         sys.exit(1)
     
     # Test connection
@@ -341,10 +542,12 @@ def main():
                 execute = input("\n▶ Выполнить запрос? (y/n): ").strip().lower()
                 
                 if execute in ['y', 'yes', 'д', 'да']:
-                    result = generator.execute_query(sql_query)
-                    if result:
+                    success, output = generator.execute_query(sql_query)
+                    if success and output:
                         print("\n✓ Результаты запроса:")
-                        print(generator.format_results(result))
+                        print(generator.format_results(output))
+                    elif success:
+                        print("\n✓ Запрос выполнен успешно")
                     else:
                         print("✗ Запрос не выполнен")
             else:
