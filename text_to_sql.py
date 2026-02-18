@@ -10,6 +10,11 @@ import sys
 import subprocess
 import tempfile
 import re
+import ssl
+import base64
+import urllib.request
+import urllib.parse
+import urllib.error
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -53,8 +58,68 @@ class ClickHouseSQLGenerator:
         self.config_file = None
         self.create_clickhouse_config()
         
+        # Determine if using HTTP interface (ports 8443, 443, 8123)
+        self.use_http = self.ch_port in (8443, 443, 8123)
+        
         # Connection test status
         self.connection_ok = False
+    
+    def _build_http_url(self):
+        """Build the base URL for ClickHouse HTTP interface"""
+        scheme = 'http' if self.ch_port == 8123 else 'https'
+        return f"{scheme}://{self.ch_host}:{self.ch_port}/"
+    
+    def _execute_http_query(self, query, timeout=10):
+        """Execute a query via ClickHouse HTTP interface
+        
+        Args:
+            query (str): SQL query to execute
+            timeout (int): Request timeout in seconds
+            
+        Returns:
+            tuple: (success, output, error) where success is bool
+        """
+        url = self._build_http_url()
+        
+        # Build query parameters (database only, credentials via Basic Auth)
+        params = {}
+        if self.ch_database:
+            params['database'] = self.ch_database
+        
+        if params:
+            url = url + '?' + urllib.parse.urlencode(params)
+        
+        # Configure SSL
+        ssl_context = None
+        if self.ch_port != 8123:
+            ssl_context = ssl.create_default_context()
+            if self.ch_ssl_cert and os.path.exists(self.ch_ssl_cert):
+                ssl_context.load_verify_locations(os.path.abspath(self.ch_ssl_cert))
+        
+        try:
+            req = urllib.request.Request(
+                url,
+                data=query.encode('utf-8'),
+                method='POST'
+            )
+            
+            # Use HTTP Basic Auth for credentials
+            if self.ch_user and self.ch_password:
+                credentials = base64.b64encode(
+                    f"{self.ch_user}:{self.ch_password}".encode('utf-8')
+                ).decode('ascii')
+                req.add_header('Authorization', f'Basic {credentials}')
+            
+            response = urllib.request.urlopen(req, timeout=timeout, context=ssl_context)
+            output = response.read().decode('utf-8')
+            return True, output, None
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8', errors='replace')
+            return False, None, error_body
+        except urllib.error.URLError as e:
+            return False, None, str(e.reason)
+        except Exception as e:
+            return False, None, str(e)
     
     def create_clickhouse_config(self):
         """Create ClickHouse client configuration file with AI settings"""
@@ -117,32 +182,45 @@ class ClickHouseSQLGenerator:
     def connect_to_clickhouse(self):
         """Test connection to ClickHouse database"""
         try:
-            cmd = self._build_clickhouse_command("SELECT 1")
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                print("✓ Успешно подключено к ClickHouse базе данных")
-                self.connection_ok = True
-                return True
+            if self.use_http:
+                success, output, error = self._execute_http_query("SELECT 1")
+                if success:
+                    print("✓ Успешно подключено к ClickHouse базе данных")
+                    self.connection_ok = True
+                    return True
+                else:
+                    print("✗ Ошибка подключения к ClickHouse")
+                    print("  Проверьте настройки подключения в файле .env")
+                    if error:
+                        error_line = error.split('\n')[0]
+                        print(f"  {error_line}")
+                    return False
             else:
-                print(f"✗ Ошибка подключения к ClickHouse")
-                print(f"  Проверьте настройки подключения в файле .env")
-                if result.stderr:
-                    # Only show first line of error to avoid exposing sensitive info
-                    error_line = result.stderr.split('\n')[0]
-                    print(f"  {error_line}")
-                return False
+                cmd = self._build_clickhouse_command("SELECT 1")
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if result.returncode == 0:
+                    print("✓ Успешно подключено к ClickHouse базе данных")
+                    self.connection_ok = True
+                    return True
+                else:
+                    print("✗ Ошибка подключения к ClickHouse")
+                    print("  Проверьте настройки подключения в файле .env")
+                    if result.stderr:
+                        error_line = result.stderr.split('\n')[0]
+                        print(f"  {error_line}")
+                    return False
         except subprocess.TimeoutExpired:
             print("✗ Превышено время ожидания подключения к ClickHouse")
             return False
         except Exception as e:
-            print(f"✗ Ошибка подключения к ClickHouse")
-            print(f"  Проверьте настройки подключения в файле .env")
+            print("✗ Ошибка подключения к ClickHouse")
+            print("  Проверьте настройки подключения в файле .env")
             return False
     
     def _build_clickhouse_command(self, query, extra_args=None):
@@ -160,7 +238,12 @@ class ClickHouseSQLGenerator:
         # Connection parameters
         if self.ch_host:
             cmd.extend(['--host', self.ch_host])
-        if self.ch_port:
+        
+        # When HTTP port is configured, use native secure port for clickhouse-client
+        if self.use_http:
+            native_port = int(os.getenv('CLICKHOUSE_NATIVE_PORT', '9440'))
+            cmd.extend(['--port', str(native_port)])
+        elif self.ch_port:
             cmd.extend(['--port', str(self.ch_port)])
         if self.ch_user:
             cmd.extend(['--user', self.ch_user])
@@ -197,31 +280,49 @@ class ClickHouseSQLGenerator:
         
         try:
             query = f"DESCRIBE TABLE {self.ch_database}.{self.ch_table}"
-            cmd = self._build_clickhouse_command(query)
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0 and result.stdout:
-                schema = []
-                for line in result.stdout.strip().split('\n'):
-                    if line:
-                        parts = line.split('\t')
-                        if len(parts) >= 2:
-                            schema.append({
-                                'name': parts[0],
-                                'type': parts[1],
-                            })
-                return schema
+            if self.use_http:
+                success, output, error = self._execute_http_query(query)
+                if success and output:
+                    schema = []
+                    for line in output.strip().split('\n'):
+                        if line:
+                            parts = line.split('\t')
+                            if len(parts) >= 2:
+                                schema.append({
+                                    'name': parts[0],
+                                    'type': parts[1],
+                                })
+                    return schema
+                else:
+                    print("✗ Ошибка при получении схемы таблицы")
+                    return None
             else:
-                print(f"✗ Ошибка при получении схемы таблицы")
-                return None
+                cmd = self._build_clickhouse_command(query)
+                
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if result.returncode == 0 and result.stdout:
+                    schema = []
+                    for line in result.stdout.strip().split('\n'):
+                        if line:
+                            parts = line.split('\t')
+                            if len(parts) >= 2:
+                                schema.append({
+                                    'name': parts[0],
+                                    'type': parts[1],
+                                })
+                    return schema
+                else:
+                    print("✗ Ошибка при получении схемы таблицы")
+                    return None
         except Exception as e:
-            print(f"✗ Ошибка при получении схемы таблицы")
+            print("✗ Ошибка при получении схемы таблицы")
             return None
     
     def generate_sql(self, natural_query):
@@ -342,30 +443,39 @@ class ClickHouseSQLGenerator:
             if 'LIMIT' not in sql_query.upper() and sql_query.strip().upper().startswith('SELECT'):
                 sql_query = f"{sql_query} LIMIT {limit}"
             
-            # Execute query using clickhouse-client
-            cmd = self._build_clickhouse_command(sql_query)
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            
-            if result.returncode == 0:
-                return True, result.stdout.strip()
+            if self.use_http:
+                success, output, error = self._execute_http_query(sql_query, timeout=30)
+                if success:
+                    return True, output.strip() if output else None
+                else:
+                    print("✗ Ошибка при выполнении запроса")
+                    if error:
+                        error_line = error.split('\n')[0]
+                        print(f"  {error_line}")
+                    return False, None
             else:
-                print(f"✗ Ошибка при выполнении запроса")
-                if result.stderr:
-                    # Show sanitized error
-                    error = result.stderr.split('\n')[0]
-                    print(f"  {error}")
-                return False, None
+                cmd = self._build_clickhouse_command(sql_query)
+                
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if result.returncode == 0:
+                    return True, result.stdout.strip()
+                else:
+                    print("✗ Ошибка при выполнении запроса")
+                    if result.stderr:
+                        error = result.stderr.split('\n')[0]
+                        print(f"  {error}")
+                    return False, None
         except subprocess.TimeoutExpired:
-            print(f"✗ Превышено время ожидания выполнения запроса")
+            print("✗ Превышено время ожидания выполнения запроса")
             return False, None
         except Exception as e:
-            print(f"✗ Ошибка при выполнении запроса")
+            print("✗ Ошибка при выполнении запроса")
             return False, None
     
     def format_results(self, output):
