@@ -302,7 +302,7 @@ brew install clickhouse
 
 Если нативный порт на вашем сервере отличается от 9440, укажите его в `.env`:
 ```env
-CLICKHOUSE_NATIVE_PORT=9440
+CLICKHOUSE_NATIVE_PORT=9000  # например, для нативного порта без TLS
 ```
 
 ### Ошибка AI API
