@@ -65,7 +65,8 @@ class ClickHouseSQLGenerator:
             print("✓ Успешно подключено к ClickHouse базе данных")
             return True
         except Exception as e:
-            print(f"✗ Ошибка подключения к ClickHouse: {e}")
+            print(f"✗ Ошибка подключения к ClickHouse")
+            print(f"  Проверьте настройки подключения в файле .env")
             return False
     
     def get_table_schema(self):
@@ -133,6 +134,7 @@ class ClickHouseSQLGenerator:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/Erofaxxx/text_to_clickhouse_sql",
+            "X-Title": "Text to ClickHouse SQL",
         }
         
         data = {
@@ -157,11 +159,17 @@ class ClickHouseSQLGenerator:
             sql_query = sql_query.replace('```sql', '').replace('```', '').strip()
             
             return sql_query
+        except requests.exceptions.Timeout:
+            print("✗ Превышено время ожидания ответа от API")
+            print("  Проверьте подключение к интернету или попробуйте позже")
+            return None
         except requests.exceptions.RequestException as e:
-            print(f"✗ Ошибка при обращении к API: {e}")
+            print(f"✗ Ошибка при обращении к API")
+            print(f"  Проверьте API ключ и подключение к интернету")
             return None
         except (KeyError, IndexError) as e:
-            print(f"✗ Ошибка при парсинге ответа API: {e}")
+            print(f"✗ Ошибка при парсинге ответа API")
+            print(f"  Получен неожиданный формат ответа")
             return None
     
     def execute_query(self, sql_query, limit=10):
