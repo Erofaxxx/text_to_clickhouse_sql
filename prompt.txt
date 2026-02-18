@@ -1,0 +1,21 @@
+СОздай прогрумму python которая работат в терминале, я пишу запрос на русском языке, а ии-агент clickhouse формулирует sql запрос правильный. 
+https://clickhouse.com/docs/ru/use-cases/AI/ai-powered-sql-generation
+https://clickhouse.com/docs/interfaces/cli#ai-sql-generation
+
+вот документация. 
+
+У меня есть api ключ от openrouter. Я хочу чтобы использовалась модель claude sonnet 4.6
+
+И также есть данные от базы данных 
+
+CLICKHOUSE_HOST=https://rc1b-vsrkuug8qh3pkkeg.mdb.yandexcloud.net
+CLICKHOUSE_PORT=8443
+CLICKHOUSE_USER=User_main
+CLICKHOUSE_PASSWORD=click_security_house_7659
+CLICKHOUSE_DATABASE=ym_sanok
+CLICKHOUSE_TABLE=visits_complete
+CLICKHOUSE_SSL_CERT_PATH=YandexInternalRootCA.crt
+
+
+но не вставляй пароли в публичный доступ. 
+
