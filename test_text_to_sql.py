@@ -172,5 +172,140 @@ class TestHostParsing(unittest.TestCase):
         self.assertEqual(gen.ch_host, 'my-host.net')
 
 
+class TestSQLExtraction(unittest.TestCase):
+    """Test SQL extraction from AI output"""
+
+    @patch.dict(os.environ, {
+        'OPENROUTER_API_KEY': 'test-key',
+        'CLICKHOUSE_HOST': 'test-host.net',
+        'CLICKHOUSE_PORT': '8443',
+        'CLICKHOUSE_USER': 'user',
+        'CLICKHOUSE_PASSWORD': 'pass',
+        'CLICKHOUSE_DATABASE': 'testdb',
+    })
+    def test_extract_simple_select(self):
+        """Should extract simple SELECT query"""
+        from text_to_sql import ClickHouseSQLGenerator
+        gen = ClickHouseSQLGenerator()
+
+        output = """Starting AI SQL generation...
+──────────────────────────────────────────────────
+🔍 list_databases
+   ➜ system, default, testdb
+✨ SQL query generated successfully!
+──────────────────────────────────────────────────
+
+SELECT * FROM testdb.users LIMIT 10"""
+
+        result = gen._extract_sql_from_output(output)
+        self.assertEqual(result, "SELECT * FROM testdb.users LIMIT 10")
+
+    @patch.dict(os.environ, {
+        'OPENROUTER_API_KEY': 'test-key',
+        'CLICKHOUSE_HOST': 'test-host.net',
+        'CLICKHOUSE_PORT': '8443',
+        'CLICKHOUSE_USER': 'user',
+        'CLICKHOUSE_PASSWORD': 'pass',
+        'CLICKHOUSE_DATABASE': 'testdb',
+    })
+    def test_extract_describe_query(self):
+        """Should extract DESCRIBE query"""
+        from text_to_sql import ClickHouseSQLGenerator
+        gen = ClickHouseSQLGenerator()
+
+        output = """Starting AI SQL generation...
+──────────────────────────────────────────────────
+DESCRIBE TABLE testdb.users"""
+
+        result = gen._extract_sql_from_output(output)
+        self.assertEqual(result, "DESCRIBE TABLE testdb.users")
+
+    @patch.dict(os.environ, {
+        'OPENROUTER_API_KEY': 'test-key',
+        'CLICKHOUSE_HOST': 'test-host.net',
+        'CLICKHOUSE_PORT': '8443',
+        'CLICKHOUSE_USER': 'user',
+        'CLICKHOUSE_PASSWORD': 'pass',
+        'CLICKHOUSE_DATABASE': 'testdb',
+    })
+    def test_extract_multiline_query(self):
+        """Should extract multiline SQL query"""
+        from text_to_sql import ClickHouseSQLGenerator
+        gen = ClickHouseSQLGenerator()
+
+        output = """🔍 get_schema_for_table
+   table: users
+✨ Generated!
+──────────────────────────────────────────────────
+
+SELECT
+    name,
+    type
+FROM system.columns
+WHERE table = 'users'"""
+
+        result = gen._extract_sql_from_output(output)
+        expected = """SELECT
+    name,
+    type
+FROM system.columns
+WHERE table = 'users'"""
+        self.assertEqual(result, expected)
+
+    @patch.dict(os.environ, {
+        'OPENROUTER_API_KEY': 'test-key',
+        'CLICKHOUSE_HOST': 'test-host.net',
+        'CLICKHOUSE_PORT': '8443',
+        'CLICKHOUSE_USER': 'user',
+        'CLICKHOUSE_PASSWORD': 'pass',
+        'CLICKHOUSE_DATABASE': 'testdb',
+    })
+    def test_extract_empty_output(self):
+        """Should return None for empty output"""
+        from text_to_sql import ClickHouseSQLGenerator
+        gen = ClickHouseSQLGenerator()
+
+        result = gen._extract_sql_from_output("")
+        self.assertIsNone(result)
+
+    @patch.dict(os.environ, {
+        'OPENROUTER_API_KEY': 'test-key',
+        'CLICKHOUSE_HOST': 'test-host.net',
+        'CLICKHOUSE_PORT': '8443',
+        'CLICKHOUSE_USER': 'user',
+        'CLICKHOUSE_PASSWORD': 'pass',
+        'CLICKHOUSE_DATABASE': 'testdb',
+    })
+    def test_extract_no_sql_in_output(self):
+        """Should return None when no SQL found"""
+        from text_to_sql import ClickHouseSQLGenerator
+        gen = ClickHouseSQLGenerator()
+
+        output = """Starting AI SQL generation...
+🔍 list_databases
+Error: Could not generate SQL"""
+
+        result = gen._extract_sql_from_output(output)
+        self.assertIsNone(result)
+
+    @patch.dict(os.environ, {
+        'OPENROUTER_API_KEY': 'test-key',
+        'CLICKHOUSE_HOST': 'test-host.net',
+        'CLICKHOUSE_PORT': '8443',
+        'CLICKHOUSE_USER': 'user',
+        'CLICKHOUSE_PASSWORD': 'pass',
+        'CLICKHOUSE_DATABASE': 'testdb',
+    })
+    def test_extract_show_query(self):
+        """Should extract SHOW query"""
+        from text_to_sql import ClickHouseSQLGenerator
+        gen = ClickHouseSQLGenerator()
+
+        output = """SHOW TABLES FROM testdb"""
+
+        result = gen._extract_sql_from_output(output)
+        self.assertEqual(result, "SHOW TABLES FROM testdb")
+
+
 if __name__ == '__main__':
     unittest.main()

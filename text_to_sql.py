@@ -359,25 +359,45 @@ class ClickHouseSQLGenerator:
             if result.returncode == 0:
                 # Extract SQL from output
                 output = result.stdout.strip()
-                
+
+                if not output:
+                    print("✗ Получен пустой ответ от ClickHouse AI")
+                    if result.stderr:
+                        print(f"  Stderr: {result.stderr.strip()}")
+                    return None
+
                 # The output should contain the generated SQL
                 # Parse it to extract just the SQL query
                 sql_query = self._extract_sql_from_output(output)
-                
+
                 if sql_query:
                     return sql_query
                 else:
-                    # If we can't parse, return the full output
-                    print("⚠ Не удалось извлечь SQL из ответа, показываем полный вывод")
-                    return output
+                    # If we can't parse, show what we got and return None
+                    print("⚠ Не удалось извлечь SQL из ответа AI")
+                    print("  Полный вывод:")
+                    # Show first few lines of output for debugging
+                    output_lines = output.split('\n')
+                    for i, line in enumerate(output_lines[:10]):  # Show first 10 lines
+                        print(f"    {line}")
+                    if len(output_lines) > 10:
+                        print(f"    ... ({len(output_lines) - 10} больше строк)")
+                    return None
             else:
                 print("✗ Ошибка при генерации SQL запроса")
                 if result.stderr:
                     # Check for specific error messages
                     if 'AI features' in result.stderr or 'API key' in result.stderr:
                         print("  Проверьте настройки AI API ключа")
+                    elif 'Connection refused' in result.stderr or 'connect' in result.stderr.lower():
+                        print("  Не удалось подключиться к ClickHouse")
+                        print("  Проверьте настройки CLICKHOUSE_HOST, CLICKHOUSE_PORT (нативный порт)")
                     else:
-                        print(f"  {result.stderr.split('\n')[0]}")  # First line only
+                        # Show first line of error
+                        error_lines = result.stderr.strip().split('\n')
+                        print(f"  {error_lines[0]}")
+                        if len(error_lines) > 1:
+                            print(f"  (и ещё {len(error_lines) - 1} строк ошибки)")
                 return None
                 
         except subprocess.TimeoutExpired:
@@ -392,36 +412,70 @@ class ClickHouseSQLGenerator:
         """Extract SQL query from ClickHouse AI output"""
         # The AI output typically contains the SQL query
         # We need to extract it, removing any explanatory text
-        
+
+        if not output or not output.strip():
+            return None
+
         lines = output.split('\n')
         sql_lines = []
         in_sql = False
-        
+        skip_commentary = True
+
         for line in lines:
-            # Skip empty lines and metadata
-            if not line.strip():
+            # Skip empty lines at the beginning
+            if not line.strip() and not sql_lines:
                 continue
-            
-            # Skip lines that look like AI commentary
-            if line.startswith('Starting AI') or line.startswith('──') or \
-               line.startswith('🔍') or line.startswith('✨') or \
-               'generated successfully' in line.lower():
+
+            # Skip lines that look like AI commentary or progress indicators
+            if skip_commentary and (
+                line.startswith('Starting AI') or
+                line.startswith('──') or
+                line.startswith('🔍') or
+                line.startswith('✨') or
+                line.startswith('➜') or
+                'generated successfully' in line.lower() or
+                'list_databases' in line.lower() or
+                'list_tables' in line.lower() or
+                'get_schema' in line.lower()
+            ):
                 continue
-            
+
             # Look for SQL keywords to identify SQL content
-            if re.match(r'^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|SHOW|DESCRIBE)', 
+            if re.match(r'^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|SHOW|DESCRIBE|EXPLAIN)',
                        line, re.IGNORECASE):
                 in_sql = True
-            
+                skip_commentary = False
+
             if in_sql:
+                # Once we start collecting SQL, keep all lines (including empty ones)
                 sql_lines.append(line)
-        
+
         if sql_lines:
-            return '\n'.join(sql_lines).strip()
-        
-        # If we couldn't find SQL keywords, return the full output
-        # (it might be a simple query without SELECT)
-        return output.strip()
+            # Remove trailing empty lines
+            while sql_lines and not sql_lines[-1].strip():
+                sql_lines.pop()
+            if sql_lines:
+                return '\n'.join(sql_lines).strip()
+
+        # If we couldn't find SQL keywords, check if the output looks like SQL
+        # by checking for common SQL patterns
+        output_clean = output.strip()
+        if re.search(r'\b(SELECT|FROM|WHERE|GROUP BY|ORDER BY|LIMIT|DESCRIBE|SHOW)\b',
+                     output_clean, re.IGNORECASE):
+            # Remove the commentary section if present
+            if '──────────────────────────────────────────────────' in output_clean:
+                parts = output_clean.split('──────────────────────────────────────────────────')
+                if len(parts) > 1:
+                    # Take the last part (after the last separator)
+                    potential_sql = parts[-1].strip()
+                    if potential_sql:
+                        return potential_sql
+
+            # Otherwise return the full output
+            return output_clean
+
+        # No SQL found
+        return None
     
     def execute_query(self, sql_query, limit=10):
         """
