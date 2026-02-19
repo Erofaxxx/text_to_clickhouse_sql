@@ -404,6 +404,18 @@ SELECT * FROM visits_complete LIMIT 5 FORMAT PrettyCompact;
 
 ## Устранение неполадок
 
+### ⚡ Частые проблемы (Quick Reference)
+
+| Проблема | Быстрое решение |
+|----------|-----------------|
+| **AI ищет в 'default' вместо моей базы** | `USE ym_sanok;` или укажите базу в запросе: `?? покажи таблицы в ym_sanok` |
+| **AI features are not configured** | Проверьте config.yaml или установите `export ANTHROPIC_API_KEY="ваш-ключ"` |
+| **Connection refused** | Используйте порт 9440, НЕ 8443 |
+| **Authentication failed** | Проверьте user/password в config.yaml |
+| **SSL certificate problem** | Скачайте сертификат: `wget "https://storage.yandexcloud.net/cloud-certs/CA.pem" -O ~/.clickhouse-client/root.crt` |
+
+---
+
 ### 1. "AI features are not configured"
 
 **Проблема:** AI не настроен.
