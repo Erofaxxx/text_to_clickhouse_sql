@@ -78,6 +78,8 @@ ai:
   api_key: ваш-ключ-openrouter
   base_url: https://openrouter.ai/api/v1
   model: anthropic/claude-3.5-sonnet
+  temperature: 0.0
+  max_tokens: 1000
   timeout_seconds: 30
   enable_schema_access: true
 EOF
@@ -96,6 +98,8 @@ ai:
   provider: openai
   api_key: ваш-ключ-openai
   model: gpt-4o
+  temperature: 0.0
+  max_tokens: 1000
   enable_schema_access: true
 ```
 
@@ -109,6 +113,8 @@ ai:
   provider: anthropic
   api_key: ваш-ключ-anthropic
   model: claude-3-5-sonnet-20241022
+  temperature: 0.0
+  max_tokens: 1000
   enable_schema_access: true
 ```
 
@@ -124,6 +130,8 @@ ai:
   provider: openai
   api_key: ваш-ключ
   model: gpt-4o                    # Модель для использования
+  temperature: 0.0                  # 0.0 = детерминированный, 1.0 = творческий
+  max_tokens: 1000                  # Максимальная длина ответа
   timeout_seconds: 30               # Таймаут запроса
   enable_schema_access: true        # Разрешить AI исследовать схему БД
   max_steps: 10                     # Максимум шагов для исследования схемы
@@ -607,6 +615,8 @@ ai:
   provider: anthropic
   api_key: sk-ant-api03-...
   model: claude-sonnet-4-6
+  temperature: 0.0
+  max_tokens: 1000
   timeout_seconds: 30
   enable_schema_access: true
 ```
@@ -838,6 +848,8 @@ ai:
   api_key: ваш-ключ-openrouter
   base_url: https://openrouter.ai/api/v1
   model: anthropic/claude-3.5-sonnet
+  temperature: 0.0
+  max_tokens: 1000
   timeout_seconds: 30
   enable_schema_access: true
 ```

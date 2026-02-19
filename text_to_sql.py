@@ -132,6 +132,8 @@ class ClickHouseSQLGenerator:
   api_key: {self.ai_api_key}
   base_url: https://openrouter.ai/api/v1
   model: anthropic/claude-3.5-sonnet
+  temperature: 0.0
+  max_tokens: 1000
   timeout_seconds: 30
   enable_schema_access: true
 """
@@ -140,6 +142,8 @@ class ClickHouseSQLGenerator:
   provider: anthropic
   api_key: {self.ai_api_key}
   model: claude-3-5-sonnet-20241022
+  temperature: 0.0
+  max_tokens: 1000
   timeout_seconds: 30
   enable_schema_access: true
 """
@@ -148,6 +152,8 @@ class ClickHouseSQLGenerator:
   provider: openai
   api_key: {self.ai_api_key}
   model: gpt-4o
+  temperature: 0.0
+  max_tokens: 1000
   timeout_seconds: 30
   enable_schema_access: true
 """
